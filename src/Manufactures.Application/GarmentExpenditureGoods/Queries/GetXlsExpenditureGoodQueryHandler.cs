@@ -74,7 +74,9 @@ namespace Manufactures.Application.GarmentExpenditureGoods.Queries
 			public string invoice { get; internal set; }
 			public decimal price { get; internal set; }
 			public double fc { get; internal set; }
-		}
+            public string productCode { get; internal set; }
+            public string UId { get; internal set; }
+        }
 
 		public async Task<PEBResult> GetDataPEB(List<string> invoice, string token)
         {
@@ -146,8 +148,38 @@ namespace Manufactures.Application.GarmentExpenditureGoods.Queries
 			 
 			return costCalculationGarmentDataProductionReport;
 		}
-		 
-		class ViewFC
+
+        private async Task<List<GarmentProductViewModel>> GetProductCode(string codes, string token)
+        {
+            var garmentProductionUri = MasterDataSettings.Endpoint + $"master/garmentProducts/byCode?code=" + codes;
+            var listInvoice = string.Join(",", codes.Distinct());
+            var stringcontent = new StringContent(JsonConvert.SerializeObject(listInvoice), Encoding.UTF8, "application/json");
+            var httpResponse = await _http.SendAsync(HttpMethod.Get, garmentProductionUri, token, stringcontent);
+            if (httpResponse.IsSuccessStatusCode)
+            {
+                var content = httpResponse.Content.ReadAsStringAsync().Result;
+                Dictionary<string, object> result = JsonConvert.DeserializeObject<Dictionary<string, object>>(content);
+
+                List<GarmentProductViewModel> viewModel;
+                if (result.GetValueOrDefault("data") == null)
+                {
+                    viewModel = new List<GarmentProductViewModel>();
+                }
+                else
+                {
+                    viewModel = JsonConvert.DeserializeObject<List<GarmentProductViewModel>>(result.GetValueOrDefault("data").ToString());
+
+                }
+                return viewModel;
+            }
+            else
+            {
+                List<GarmentProductViewModel> viewModel = new List<GarmentProductViewModel>();
+                return viewModel;
+            }
+        }
+
+        class ViewFC
 		{
 			public string RO { get; internal set; }
 			public double FC { get; internal set; }
@@ -223,12 +255,12 @@ namespace Manufactures.Application.GarmentExpenditureGoods.Queries
 			//                      unitname = a.UnitName};
 
 			var Query = (from a in (from aa in garmentExpenditureGoodRepository.Query
-								   where aa.ExpenditureDate >= dateFrom && aa.ExpenditureDate <= dateTo
+								   where aa.ExpenditureDate.AddHours(7).Date >= dateFrom.Date && aa.ExpenditureDate.AddHours(7).Date <= dateTo.Date
 								   select aa)
 						join b in garmentExpenditureGoodItemRepository.Query on a.Identity equals b.ExpenditureGoodId
 						join c in garmentPreparingRepository.Query on a.RONo equals c.RONo
 						join d in garmentPreparingItemRepository.Query on c.Identity equals d.GarmentPreparingId
-						where d.CustomsCategory == "FASILITAS" && a.ExpenditureDate >= dateFrom && a.ExpenditureDate <= dateTo
+						where d.CustomsCategory == "FASILITAS" && a.ExpenditureDate.AddHours(7).Date >= dateFrom.Date && a.ExpenditureDate.AddHours(7).Date <= dateTo.Date
 						//select new monitoringView { fc = (from aa in sumFCs where aa.RO == a.RONo select aa.FC / aa.Count).FirstOrDefault(),
 						select new monitoringView
 						{
@@ -236,7 +268,7 @@ namespace Manufactures.Application.GarmentExpenditureGoods.Queries
 							//price = Convert.ToDecimal((from aa in sumbasicPrice where aa.RO == a.RONo select aa.BasicPrice / aa.Count).FirstOrDefault()),
 							//price = Convert.ToDecimal((from aa in sumbasicPrice where aa.RO == a.RONo select aa.AvgBasicPrice).FirstOrDefault()),
 							//buyerCode = (from cost in costCalculation.data where cost.ro == a.RONo select cost.buyerCode).FirstOrDefault(),
-							expenditureDate = a.ExpenditureDate,
+							expenditureDate = a.ExpenditureDate.AddHours(7).Date,
 							expenditureGoodNo = a.ExpenditureGoodNo,
 							expenditureGoodItemId = b.Identity,
 							//buyerArticle = a.BuyerCode + " " + a.Article,
@@ -249,11 +281,13 @@ namespace Manufactures.Application.GarmentExpenditureGoods.Queries
 							invoice = a.Invoice,
 							//colour = b.Description,
 							qty = b.Quantity,
-							//name = (from cost in costCalculation.data where cost.ro == a.RONo select cost.comodityName).FirstOrDefault(),
-							//unitname = a.UnitName
-						}).Distinct();
+                            //productCode = d.ProductCode,
+                            //name = (from cost in costCalculation.data where cost.ro == a.RONo select cost.comodityName).FirstOrDefault(),
+                            //unitname = a.UnitName,
+							UId = a.UId
+                        }).Distinct();
 
-			var querySum = Query.ToList().GroupBy(x => new { x.expenditureDate, x.expenditureGoodNo, x.invoice, x.comodityCode, x.comodityName, x.uomUnit }, (key, group) => new
+			var querySum = Query.ToList().GroupBy(x => new { x.expenditureDate, x.expenditureGoodNo, x.invoice, x.comodityCode, x.comodityName, x.uomUnit, x.productCode,x.UId }, (key, group) => new
 			{
 				//ros = key.roNo,
 				//buyer = key.buyerArticle,
@@ -271,17 +305,23 @@ namespace Manufactures.Application.GarmentExpenditureGoods.Queries
 				comodityCode = key.comodityCode,
 				comodityName = key.comodityName,
 				uomUnit = key.uomUnit,
+                productCode = key.productCode,
+                key.UId
 
-			}).OrderBy(s => s.expendituregoodNo);
+            }).OrderBy(s => s.expendituregoodNo);
 
 			var Pebs = await GetDataPEB(querySum.Select(x => x.invoices).ToList(), request.token);
-
-			foreach (var item in querySum)
+            var Codes = await GetProductCode(string.Join(",", querySum.Select(x => x.productCode).ToHashSet()), request.token);
+            string[] exceptionBonNo = { "EGEAG223100009", "EGEAG223100060" };
+            foreach (var item in querySum)
 			{
 				var peb = Pebs.data.FirstOrDefault(x => x.BonNo.Trim() == item.invoices);
-				//DateTime? non = null;
+                //DateTime? non = null;
+                var remark = Codes.FirstOrDefault(x => x.Code == item.productCode);
 
-				GarmentMonitoringExpenditureGoodDto dto = new GarmentMonitoringExpenditureGoodDto
+                var finalRemark = remark != null ? " - " + remark.Composition + " " + remark.Width + " " + remark.Const + " " + remark.Yarn : "";
+
+                GarmentMonitoringExpenditureGoodDto dto = new GarmentMonitoringExpenditureGoodDto
 				{
 					//roNo = item.ros,
 					//buyerArticle = item.buyer,
@@ -295,8 +335,8 @@ namespace Manufactures.Application.GarmentExpenditureGoods.Queries
 					expenditureDate = item.expenditureDates,
 					qty = item.qty,
 					comodityCode = item.comodityCode,
-					comodityName = item.comodityName,
-					uomUnit = item.uomUnit,
+                    comodityName = item.comodityName /*+ " - " + (exceptionBonNo.Contains(item.expendituregoodNo) ? item.UId : finalRemark)*/,
+                    uomUnit = item.uomUnit,
 					price = (decimal)(peb == null ? 0 : peb.Nominal),
 					//colour = item.color,
 					//name = item.names,
@@ -343,7 +383,7 @@ namespace Manufactures.Application.GarmentExpenditureGoods.Queries
 
 			};
 			monitoringDtos.Add(dtos);
-			listViewModel.garmentMonitorings = monitoringDtos;
+			listViewModel.garmentMonitorings = monitoringDtos.OrderByDescending(s => s.pebDate).ThenBy(s => s.pebNo).ToList(); ;
 			var reportDataTable = new DataTable();
 			//reportDataTable.Columns.Add(new DataColumn() { ColumnName = "NO", DataType = typeof(int) });
 			reportDataTable.Columns.Add(new DataColumn() { ColumnName = "NO PEB", DataType = typeof(string) });
@@ -389,7 +429,7 @@ namespace Manufactures.Application.GarmentExpenditureGoods.Queries
 				worksheet.Cells["A" + 1 + ":L" + 5 + ""].Style.HorizontalAlignment = ExcelHorizontalAlignment.Center;
 				worksheet.Cells["A" + 1 + ":L" + 5 + ""].Style.VerticalAlignment = ExcelVerticalAlignment.Center;
 				worksheet.Cells["A5"].LoadFromDataTable(reportDataTable, true);
-				worksheet.Column(8).Style.HorizontalAlignment = ExcelHorizontalAlignment.Right;
+				//worksheet.Column(8).Style.HorizontalAlignment = ExcelHorizontalAlignment.Right;
 				worksheet.Cells["I" + 2 + ":K" + counter + ""].Style.Numberformat.Format = "#,##0.00";
 				worksheet.Column(9).Style.HorizontalAlignment = ExcelHorizontalAlignment.Right;
 				worksheet.Cells["J" + 2 + ":J" + counter + ""].Style.Numberformat.Format = "#,##0.00";
